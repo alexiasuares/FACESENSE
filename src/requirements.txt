@@ -2,3 +2,7 @@ numpy
 pandas
 scikit-learn
 openpyxl
+tensorflow
+keras
+matplotlib
+jupyter
