@@ -2,7 +2,7 @@
 
 O **FaceSense** é um projeto de pesquisa (TCC) que desenvolve um sistema inteligente para **detecção de sinais sutis de cansaço, ansiedade e inquietação** em ambientes de estudo e trabalho.  
 
-Ele utiliza técnicas de **visão computacional** e **aprendizado de máquina** para analisar microgestos, posturas e expressões faciais em tempo real, oferecendo **feedback adaptativo** ao usuário para melhorar sua **produtividade, bem-estar e prevenção de fadiga**.  
+Ele utiliza técnicas de **visão computacional**, **aprendizado de máquina** e **interface humano-computador** para analisar microgestos, posturas e expressões faciais em tempo real, oferecendo **feedback adaptativo** ao usuário para melhorar sua **produtividade, bem-estar e prevenção de fadiga**.  
 
 ---
 
