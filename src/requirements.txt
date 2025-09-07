@@ -8,3 +8,5 @@ matplotlib
 jupyter
 opencv-python
 mediapipe
+fastapi
+uvicorn
