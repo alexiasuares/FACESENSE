@@ -6,3 +6,5 @@ tensorflow
 keras
 matplotlib
 jupyter
+opencv-python
+mediapipe
