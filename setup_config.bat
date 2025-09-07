@@ -1,5 +1,5 @@
 python -m venv venv
 venv/Scripts/activate
-cd src
+cd app
 pip install -r requirements.txt
 cd ..
