@@ -34,7 +34,9 @@ Poucos sistemas existentes conseguem analisar **microgestos e sinais sutis** de 
 - **Scikit-learn** → Suporte ao pré-processamento  
 - **NumPy / Pandas** → Manipulação dos dados  
 - **OpenCV + MediaPipe** → Captura de vídeo e landmarks em tempo real  
-- **Matplotlib / Seaborn** → Visualização de métricas e análises  
+- **Matplotlib / Seaborn** → Visualização de métricas e análises
+- **FastAPI**
+- **Streamlit**
 
 ---
 
