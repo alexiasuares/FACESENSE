@@ -1,0 +1,12 @@
+numpy
+pandas
+scikit-learn
+openpyxl
+tensorflow
+keras
+matplotlib
+jupyter
+opencv-python
+mediapipe
+fastapi
+uvicorn
