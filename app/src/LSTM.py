@@ -9,6 +9,7 @@ from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense, Dropout, Masking, Bidirectional
 from tensorflow.keras.utils import to_categorical
 from tensorflow.keras.callbacks import TensorBoard, CSVLogger, ModelCheckpoint, Callback, ReduceLROnPlateau, EarlyStopping
+from tensorflow.keras import regularizers
 from sklearn.metrics import f1_score, confusion_matrix, roc_auc_score, average_precision_score
 from sklearn.utils.class_weight import compute_class_weight
 from datetime import datetime
@@ -33,61 +34,144 @@ if dup_dir.exists() and (dup_dir / "X_train.npy").exists():
     DATA_DIR = dup_dir  # usa o nível interno
 
 # ----- Carregamento dos dados pré-processados -----
-def load_np(name): return np.load(DATA_DIR / name)
-X_train = load_np("X_train.npy"); y_train = load_np("y_train.npy")
-X_val   = load_np("X_val.npy");   y_val   = load_np("y_val.npy")
-X_test  = load_np("X_test.npy");  y_test  = load_np("y_test.npy")
+from imblearn.over_sampling import SMOTE
+def load_np(name):
+    return np.load(DATA_DIR / name)
+
+X_train = load_np("X_train.npy")
+y_train = load_np("y_train.npy")
+X_test = load_np("X_test.npy")
+y_test = load_np("y_test.npy")
 
 print("Shapes originais:")
 print(f"X_train: {X_train.shape}, y_train: {y_train.shape}")
-print(f"X_val  : {X_val.shape},   y_val  : {y_val.shape}")
 print(f"X_test : {X_test.shape},  y_test : {y_test.shape}")
 
 # ----- Remapeamento consistente (0..C-1) -----
-all_y = np.concatenate([y_train, y_val, y_test])
+all_y = np.concatenate([y_train, y_test])
 unique_labels = sorted(np.unique(all_y))
 label_mapping = {old_label: new_label for new_label, old_label in enumerate(unique_labels)}
+y_train = np.array([label_mapping[label] for label in y_train])
+y_test = np.array([label_mapping[label] for label in y_test])
+
 num_classes = len(unique_labels)
-
-y_train = np.array([label_mapping[l] for l in y_train])
-y_val   = np.array([label_mapping[l] for l in y_val])
-y_test  = np.array([label_mapping[l] for l in y_test])
-
 print("\n--- Rótulos ---")
 print(f"labels únicos: {unique_labels} -> mapeados para 0..{num_classes-1}")
 print("dist y_train:", Counter(y_train))
-print("dist y_val  :", Counter(y_val))
 print("dist y_test :", Counter(y_test))
 
+# ----- Oversampling com SMOTE nas classes minoritárias -----
+print("Antes do SMOTE:", Counter(y_train))
+smote = SMOTE(random_state=42)
+X_train_rs, y_train_rs = smote.fit_resample(X_train.reshape((X_train.shape[0], -1)), y_train)
+X_train = X_train_rs.reshape((-1, X_train.shape[1], X_train.shape[2]))
+y_train = y_train_rs
+print("Após SMOTE:", Counter(y_train))
 # ----- Normalização z-score por feature ignorando padding 0 -----
+# ----- Função de construção do modelo -----
+def build_model(input_shape, n_classes):
+    m = Sequential([
+        Masking(mask_value=0.0, input_shape=input_shape),  # ignora padding zero
+        Bidirectional(LSTM(64, return_sequences=False)),
+        Dropout(0.5),
+        Dense(
+            n_classes,
+            activation='softmax',
+            kernel_regularizer=regularizers.l2(1e-4)
+        )
+    ])
+    m.compile(
+        optimizer=tf.keras.optimizers.Adam(1e-3),
+        loss='categorical_crossentropy',
+        metrics=['accuracy']
+    )
+    return m
+# ----- Cross-validation (StratifiedKFold) -----
+from sklearn.model_selection import StratifiedKFold
+from sklearn.metrics import f1_score, accuracy_score
+
+def run_cv(X, y, num_classes, n_splits=5):
+    skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
+    accs, f1s = [], []
+    for fold, (train_idx, val_idx) in enumerate(skf.split(X, y)):
+        print(f"Fold {fold+1}/{n_splits}")
+        X_tr, X_val = X[train_idx], X[val_idx]
+        y_tr, y_val = y[train_idx], y[val_idx]
+        # Normalização
+        T, F = X_tr.shape[1], X_tr.shape[2]
+        flat = X_tr.reshape(-1, F)
+        mask = (flat != 0)
+        feat_sum = (flat * mask).sum(axis=0)
+        feat_count = mask.sum(axis=0).clip(min=1)
+        feat_mean = feat_sum / feat_count
+        flat_center = (flat - feat_mean) * mask
+        feat_var = ((flat - feat_mean) ** 2 * mask).sum(axis=0) / feat_count
+        feat_std = np.sqrt(feat_var)
+        feat_std[feat_std == 0] = 1.0
+        def apply_norm_cv(X):
+            Xf = X.reshape(-1, X.shape[-1])
+            M = (Xf != 0)
+            return ((Xf - feat_mean) / feat_std) * M
+        X_tr = apply_norm_cv(X_tr).reshape(X_tr.shape)
+        X_val = apply_norm_cv(X_val).reshape(X_val.shape)
+        # One-hot
+        y_tr_oh = to_categorical(y_tr, num_classes=num_classes)
+        y_val_oh = to_categorical(y_val, num_classes=num_classes)
+        # Pesos de classe
+        cw = compute_class_weight(class_weight="balanced", classes=np.arange(num_classes), y=y_tr)
+        class_weight = {i: float(w) for i, w in enumerate(cw)}
+        # Modelo
+        input_shape = (X_tr.shape[1], X_tr.shape[2])
+        model = build_model(input_shape, num_classes)
+        model.fit(
+            X_tr, y_tr_oh,
+            epochs=40, batch_size=16, shuffle=True,
+            class_weight=class_weight,
+            verbose=0
+        )
+        # Avaliação
+        proba = model.predict(X_val, verbose=0)
+        y_pred = np.argmax(proba, axis=1)
+        acc = accuracy_score(y_val, y_pred)
+        f1 = f1_score(y_val, y_pred, average="macro", zero_division=0)
+        print(f"  Acc: {acc:.3f} | Macro F1: {f1:.3f}")
+        accs.append(acc)
+        f1s.append(f1)
+    print(f"\nCV Média Acc: {np.mean(accs):.3f} (+/- {np.std(accs):.3f})")
+    print(f"CV Média Macro F1: {np.mean(f1s):.3f} (+/- {np.std(f1s):.3f})")
+
+# Executar cross-validation
+run_cv(X_train, y_train, num_classes, n_splits=5)
 T, F = X_train.shape[1], X_train.shape[2]
 flat = X_train.reshape(-1, F)
 mask = (flat != 0)
-feat_sum   = (flat * mask).sum(axis=0)
+feat_sum = (flat * mask).sum(axis=0)
 feat_count = mask.sum(axis=0).clip(min=1)
-feat_mean  = feat_sum / feat_count
+feat_mean = feat_sum / feat_count
 flat_center = (flat - feat_mean) * mask
-feat_var  = (flat_center**2).sum(axis=0) / feat_count
-feat_std  = np.sqrt(feat_var); feat_std[feat_std == 0] = 1.0
+feat_var = ((flat - feat_mean) ** 2 * mask).sum(axis=0) / feat_count
+feat_std = np.sqrt(feat_var)
+feat_std[feat_std == 0] = 1.0
 
 def apply_norm(X):
-    Xf = X.reshape(-1, F)
-    M  = (Xf != 0)
-    Xf = np.where(M, (Xf - feat_mean) / feat_std, 0.0)
-    return Xf.reshape(X.shape)
+    Xf = X.reshape(-1, X.shape[-1])
+    M = (Xf != 0)
+    return ((Xf - feat_mean) / feat_std) * M
 
-X_train = apply_norm(X_train)
-X_val   = apply_norm(X_val)
-X_test  = apply_norm(X_test)
+X_train = apply_norm(X_train).reshape(X_train.shape)
+X_test = apply_norm(X_test).reshape(X_test.shape)
 
 def stats(X, tag):
-    nz = (X != 0).sum(); tot = np.prod(X.shape)
-    print(f"[{tag}] nonzeros={nz}/{tot} ({100*nz/tot:.2f}%) mean={X.mean():.4f} std={X.std():.4f}")
-stats(X_train, "train"); stats(X_val, "val"); stats(X_test, "test")
+    nz = (X != 0).sum()
+    tot = np.prod(X.shape)
+    percent = 100 * nz / tot
+    print(f"[{tag}] nonzeros={nz}/{tot} ({percent:.2f}%) mean={X.mean():.4f} std={X.std():.4f}")
+
+stats(X_train, "train")
+stats(X_test, "test")
 
 # ----- One-Hot -----
 y_train_oh = to_categorical(y_train, num_classes=num_classes)
-y_val_oh   = to_categorical(y_val,   num_classes=num_classes)
 y_test_oh  = to_categorical(y_test,  num_classes=num_classes)
 
 # ----- Pesos de classe (desbalanceamento) -----
@@ -98,39 +182,34 @@ print("class_weight:", class_weight)
 # ----- Modelo (com Masking e BiLSTM) -----
 def build_model(input_shape, n_classes):
     m = Sequential([
-        Masking(mask_value=0.0, input_shape=input_shape),          # ignora padding zero
-        Bidirectional(LSTM(128, return_sequences=False)),
+        Masking(mask_value=0.0, input_shape=input_shape),  # ignora padding zero
+        Bidirectional(LSTM(64, return_sequences=False)),
         Dropout(0.5),
-        Dense(n_classes, activation='softmax')
+        Dense(
+            n_classes,
+            activation='softmax',
+            kernel_regularizer=regularizers.l2(1e-4)
+        )
     ])
-    m.compile(optimizer=tf.keras.optimizers.Adam(1e-3),
-              loss='categorical_crossentropy',
-              metrics=['accuracy'])
+    m.compile(
+        optimizer=tf.keras.optimizers.Adam(1e-3),
+        loss='categorical_crossentropy',
+        metrics=['accuracy']
+    )
     return m
 
 # ----- F1 macro como callback de validação -----
 class F1MacroCallback(tf.keras.callbacks.Callback):
-    def __init__(self, Xv, yv_oh):
-        super().__init__()
-        self.Xv, self.yv_oh = Xv, yv_oh
-    def on_epoch_end(self, epoch, logs=None):
-        proba = self.model.predict(self.Xv, verbose=0)
-        y_pred = np.argmax(proba, axis=1)
-        y_true = np.argmax(self.yv_oh, axis=1)
-        f1m = f1_score(y_true, y_pred, average="macro", zero_division=0)
-        logs = logs or {}
-        logs["val_f1_macro"] = f1m
-        print(f"\n[Epoch {epoch+1}] val_f1_macro={f1m:.4f}")
+    pass  # Callback disabled (no validation set)
 
 # ----- Logs e checkpoint -----
 RUN_DIR = ROOT / "runs" / "skeleton" / datetime.now().strftime("%Y%m%d-%H%M%S")
 RUN_DIR.mkdir(parents=True, exist_ok=True)
-tb   = TensorBoard(log_dir=str(RUN_DIR / "tb"))
-csv  = CSVLogger(str(RUN_DIR / "training.csv"))
-ckpt = ModelCheckpoint(str(RUN_DIR / "best.keras"), monitor="val_f1_macro", mode="max", save_best_only=True, verbose=1)
-rlr  = ReduceLROnPlateau(monitor="val_f1_macro", mode="max", factor=0.5, patience=5, min_lr=1e-5, verbose=1)
-es   = EarlyStopping(monitor="val_f1_macro", mode="max", patience=10, restore_best_weights=True, verbose=1)
-f1cb = F1MacroCallback(X_val, y_val_oh)
+tb = TensorBoard(log_dir=str(RUN_DIR / "tb"))
+csv = CSVLogger(str(RUN_DIR / "training.csv"))
+ckpt = ModelCheckpoint(str(RUN_DIR / "best.keras"), monitor="accuracy", mode="max", save_best_only=True, verbose=1)
+rlr = ReduceLROnPlateau(monitor="accuracy", mode="max", factor=0.5, patience=5, min_lr=1e-5, verbose=1)
+es = EarlyStopping(monitor="accuracy", mode="max", patience=10, restore_best_weights=True, verbose=1)
 
 # ----- Treino -----
 input_shape = (X_train.shape[1], X_train.shape[2])
@@ -139,10 +218,9 @@ model.summary()
 
 history = model.fit(
     X_train, y_train_oh,
-    epochs=80, batch_size=32, shuffle=True,
-    validation_data=(X_val, y_val_oh),
+    epochs=80, batch_size=16, shuffle=True,
     class_weight=class_weight,
-    callbacks=[tb, csv, ckpt, rlr, es, f1cb],
+    callbacks=[tb, csv, ckpt, rlr, es],
     verbose=1
 )
 
@@ -178,8 +256,6 @@ with open(RUN_DIR / "final_results.json", "w", encoding="utf-8") as f:
 
 print("✅ Resultados:", res)
 print("TensorBoard:", (RUN_DIR / "tb").resolve())
-
-
 
 import matplotlib.pyplot as plt
 from sklearn.metrics import ConfusionMatrixDisplay, classification_report, RocCurveDisplay, PrecisionRecallDisplay
@@ -234,16 +310,39 @@ train_history = history.history
 
 # acc
 plt.plot(train_history.get('accuracy', []), label='train_acc')
-plt.plot(train_history.get('val_accuracy', []), label='val_acc')
-plt.xlabel('Época'); plt.ylabel('Acurácia'); plt.title('Curva de Acurácia (train/val)')
-plt.legend(); plt.tight_layout()
+plt.xlabel('Época')
+plt.ylabel('Acurácia')
+plt.title('Curva de Acurácia (train)')
+plt.legend()
+plt.tight_layout()
 plt.savefig(figs_dir / "curve_accuracy.png", dpi=160)
 plt.close()
 
 # loss
 plt.plot(train_history.get('loss', []), label='train_loss')
-plt.plot(train_history.get('val_loss', []), label='val_loss')
-plt.xlabel('Época'); plt.ylabel('Loss'); plt.title('Curva de Loss (train/val)')
-plt.legend(); plt.tight_layout()
+plt.xlabel('Época')
+plt.ylabel('Loss')
+plt.title('Curva de Loss (train)')
+plt.legend()
+plt.tight_layout()
 plt.savefig(figs_dir / "curve_loss.png", dpi=160)
 plt.close()
+
+# Após salvar resultados e imagens
+
+# Relatório de erros: exemplos mal classificados
+import pandas as pd
+error_indices = np.where(y_pred != y_test)[0]
+error_report = []
+for idx in error_indices:
+    error_report.append({
+        'index': int(idx),
+        'true_label': int(y_test[idx]),
+        'pred_label': int(y_pred[idx]),
+        # 'tensor': X_test[idx].tolist()  # Descomente para salvar o tensor completo
+    })
+
+# Salvar relatório em CSV
+error_df = pd.DataFrame(error_report)
+error_df.to_csv(RUN_DIR / 'test_errors.csv', index=False)
+print(f"Relatório de erros salvo em {RUN_DIR / 'test_errors.csv'} ({len(error_report)} exemplos)")
