@@ -195,9 +195,3 @@ cython_debug/
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
-
-# Ignore large per-type raw arrays; we keep compressed .npz versions instead
-X_per_type_*.npy
-y_per_type_*.npy
-# keep compressed files
-!X_per_type_*.npz

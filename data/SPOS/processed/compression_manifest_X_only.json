@@ -1,0 +1,14 @@
+{
+  "X_per_type_posed.npy": {
+    "npz": "X_per_type_posed.npz",
+    "before": 236028032,
+    "after": 27412165,
+    "converted_to_uint8": true
+  },
+  "X_per_type_spontaneous.npy": {
+    "npz": "X_per_type_spontaneous.npz",
+    "before": 1038643328,
+    "after": 92314037,
+    "converted_to_uint8": true
+  }
+}
