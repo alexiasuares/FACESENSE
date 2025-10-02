@@ -112,6 +112,8 @@ def main():
     np.save(run_dir / 'proba.npy', proba)
     np.save(run_dir / 'preds.npy', preds)
     np.save(run_dir / 'y_test.npy', y_te_m)
+    # Salva o modelo final completo para uso posterior
+    model2.save(run_dir / 'model_final.keras')
     print('Treino final salvo em', run_dir)
 
 if __name__ == '__main__':
